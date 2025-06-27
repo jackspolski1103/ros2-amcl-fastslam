@@ -802,26 +802,61 @@ class AmclNode(Node):
 
     def handle_avoiding_obstacle_state(self, estimated_pose):
         """
-        AVOIDING_OBSTACLE: giro en sitio hasta acumular 90° y luego NAVIGATING.
+        AVOIDING_OBSTACLE: gira hacia la dirección que me acerca al siguiente punto del path.
         """
-        # 1) Calcular yaw actual y cuánto giró desde la última iteración
-        yaw_now = self.get_yaw_from_pose(estimated_pose)
-        delta = self.angle_diff(yaw_now, self.obstacle_avoidance_last_yaw)
-        self.obstacle_avoidance_cumulative_angle += abs(delta)
-        self.obstacle_avoidance_last_yaw = yaw_now
+        
+        # 1) Si es la primera vez en este estado, decidir hacia qué lado girar
+        if not hasattr(self, 'turn_direction'):
+            # Obtener el siguiente punto del path
+            robot_x = estimated_pose.position.x
+            robot_y = estimated_pose.position.y
+            robot_yaw = self.get_yaw_from_pose(estimated_pose)
+            
+            # Buscar el siguiente punto del path
+            target = self.find_lookahead_point(self.current_path, robot_x, robot_y)
+            
+            if target is None:
+                # Si no hay más puntos, usar el goal final
+                if self.goal_pose is not None:
+                    target_x = self.goal_pose.position.x
+                    target_y = self.goal_pose.position.y
+                else:
+                    # Como último recurso, girar a la izquierda
+                    self.turn_direction = 1
+                    self.get_logger().info("Sin objetivo claro, girando a la IZQUIERDA por defecto")
+                    return
+            else:
+                target_x = target.position.x
+                target_y = target.position.y
+            
+            # Calcular ángulo hacia el objetivo
+            dx = target_x - robot_x
+            dy = target_y - robot_y
+            target_angle = math.atan2(dy, dx)
+            
+            # Calcular diferencia angular
+            angle_diff = self.angle_diff(target_angle, robot_yaw)
+            
+            # Decidir dirección: girar hacia donde está el objetivo
+            if angle_diff > 0:
+                self.turn_direction = 1  # Girar a la izquierda
+                self.get_logger().info(f"Girando IZQUIERDA hacia objetivo (ángulo diff: {math.degrees(angle_diff):.1f}°)")
+            else:
+                self.turn_direction = -1  # Girar a la derecha
+                self.get_logger().info(f"Girando DERECHA hacia objetivo (ángulo diff: {math.degrees(angle_diff):.1f}°)")
 
-        # 2) Publicar sólo giro (sin avance lineal)
+        # 2) Ejecutar el giro hacia la dirección elegida
         twist = Twist()
-        twist.linear.x  = 0.0
-        twist.angular.z = self.obstacle_avoidance_turn_speed
+        twist.linear.x = 0.0
+        twist.angular.z = self.turn_direction * self.obstacle_avoidance_turn_speed
         self.cmd_vel_pub.publish(twist)
 
-        # 3) Si ya giró ≥ 90°, terminar evasión
-        if self.obstacle_avoidance_cumulative_angle >= (math.pi / 2):
-            self.get_logger().info(
-                f"Finished avoidance ({self.obstacle_avoidance_cumulative_angle:.2f} rad). → NAVIGATING"
-            )
+        # 3) Verificar si ya no hay obstáculo al frente para terminar la evasión
+        if not self.is_obstacle_detected():
+            self.get_logger().info("Ya no hay obstáculo al frente. → NAVIGATING")
             # Reset y transición
+            if hasattr(self, 'turn_direction'):
+                delattr(self, 'turn_direction')
             self.obstacle_avoidance_cumulative_angle = 0.0
             self.state = State.NAVIGATING
 

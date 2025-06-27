@@ -66,6 +66,8 @@ class AmclNode(Node):
         self.declare_parameter('lookahead_distance', 0.4)     # Distancia de anticipación para el algoritmo Pure Pursuit (metros)
         self.declare_parameter('linear_velocity', 0.1)        # Velocidad lineal base para navegación autónoma (m/s)
         self.declare_parameter('goal_tolerance', 0.10)        # Radio de tolerancia para considerar alcanzado el objetivo (metros)
+        self.declare_parameter('angular_tolerance', 0.1)      # Tolerancia angular para considerar alcanzada la orientación objetivo (radianes)
+        self.declare_parameter('final_rotation_speed', 0.3)   # Velocidad angular para rotación final hacia orientación objetivo (rad/s)
         self.declare_parameter('path_pruning_distance', 0.3)  # Distancia para eliminar waypoints ya visitados (metros)
         
         # Parámetros de seguridad y inflado de mapa
@@ -98,6 +100,8 @@ class AmclNode(Node):
         self.lookahead_distance = self.get_parameter('lookahead_distance').value
         self.linear_velocity = self.get_parameter('linear_velocity').value
         self.goal_tolerance = self.get_parameter('goal_tolerance').value
+        self.angular_tolerance = self.get_parameter('angular_tolerance').value
+        self.final_rotation_speed = self.get_parameter('final_rotation_speed').value
         self.path_pruning_distance = self.get_parameter('path_pruning_distance').value
         self.safety_margin_cells = self.get_parameter('safety_margin_cells').value
         self.obstacle_detection_distance = self.get_parameter('obstacle_detection_distance').value
@@ -128,6 +132,7 @@ class AmclNode(Node):
         self.current_path = None  # Camino actual planificado hacia el objetivo
         self.goal_pose = None  # Pose objetivo actual
         self.inflated_grid = None  # Mapa inflado con márgenes de seguridad
+        self.rotating_to_final_orientation = False  # Flag para indicar si está rotando hacia orientación final
         
         # === Variables para evasión de obstáculos ===
         self.obstacle_avoidance_start_yaw = None  # Orientación inicial al comenzar evasión
@@ -221,6 +226,7 @@ class AmclNode(Node):
         self.get_logger().info(f"Nuevo objetivo: ({self.goal_pose.position.x:.2f}, {self.goal_pose.position.y:.2f})")
         self.state = State.PLANNING
         self.current_path = None
+        self.rotating_to_final_orientation = False  # Reiniciar flag de rotación
 
     def initial_pose_callback(self, msg):
         """
@@ -250,6 +256,7 @@ class AmclNode(Node):
         self.state = State.IDLE
         self.initial_pose_received = True
         self.last_odom_pose = None  # Reiniciar seguimiento de odometría
+        self.rotating_to_final_orientation = False  # Reiniciar flag de rotación
         self.stop_robot()
 
 
@@ -1027,6 +1034,7 @@ class AmclNode(Node):
 
         # === Transición exitosa a navegación ===
         self.get_logger().info(f"Planificación exitosa - Iniciando navegación hacia objetivo")
+        self.rotating_to_final_orientation = False  # Reiniciar flag para nueva navegación
         self.state = State.NAVIGATING
 
 
@@ -1057,14 +1065,37 @@ class AmclNode(Node):
             self.goal_pose.position.x - robot_x,
             self.goal_pose.position.y - robot_y
         )
+        
+        # Si llegó al punto pero aún no está en la orientación correcta
         if distance_to_goal < self.goal_tolerance:
-            self.get_logger().info("¡Objetivo alcanzado exitosamente!")
-            self.state = State.IDLE
-            self.stop_robot()
-            return
+            if not self.rotating_to_final_orientation:
+                self.get_logger().info("Posición objetivo alcanzada - Iniciando rotación hacia orientación final")
+                self.rotating_to_final_orientation = True
+            
+            # Calcular diferencia angular con la orientación objetivo
+            current_yaw = self.get_yaw_from_pose(estimated_pose)
+            goal_yaw = self.get_yaw_from_pose(self.goal_pose)
+            angular_error = self.angle_diff(goal_yaw, current_yaw)
+            
+            # Verificar si la orientación es correcta
+            if abs(angular_error) < self.angular_tolerance:
+                self.get_logger().info("¡Objetivo y orientación alcanzados exitosamente!")
+                self.state = State.IDLE
+                self.rotating_to_final_orientation = False
+                self.stop_robot()
+                return
+            else:
+                # Rotar hacia la orientación objetivo
+                rotation_command = Twist()
+                rotation_command.linear.x = 0.0
+                rotation_command.angular.z = (self.final_rotation_speed if angular_error > 0 
+                                            else -self.final_rotation_speed)
+                self.cmd_vel_pub.publish(rotation_command)
+                return
 
         # === Detección de obstáculos en el frente ===
-        if self.is_obstacle_detected():
+        # Solo detectar obstáculos si no estamos rotando hacia la orientación final
+        if not self.rotating_to_final_orientation and self.is_obstacle_detected():
             self.get_logger().info("Obstáculo detectado - Iniciando maniobra de evasión")
             self.state = State.AVOIDING_OBSTACLE
             # Inicializar variables de control para evasión
@@ -1074,22 +1105,45 @@ class AmclNode(Node):
             return
 
         # === Poda de waypoints ya visitados ===
-        # Eliminar puntos del camino que ya pasamos para optimizar búsqueda
-        self.current_path.poses = [
-            waypoint for waypoint in self.current_path.poses
-            if np.hypot(
-                waypoint.pose.position.x - robot_x,
-                waypoint.pose.position.y - robot_y
-            ) > self.path_pruning_distance
-        ]
+        # Solo podar waypoints si no estamos rotando hacia la orientación final
+        if not self.rotating_to_final_orientation:
+            # Eliminar puntos del camino que ya pasamos para optimizar búsqueda
+            self.current_path.poses = [
+                waypoint for waypoint in self.current_path.poses
+                if np.hypot(
+                    waypoint.pose.position.x - robot_x,
+                    waypoint.pose.position.y - robot_y
+                ) > self.path_pruning_distance
+            ]
 
         # === Búsqueda del punto de seguimiento (lookahead) ===
         target_point = self.find_lookahead_point(self.current_path, robot_x, robot_y)
         if target_point is None:
-            self.get_logger().info("No hay más waypoints - Objetivo alcanzado")
-            self.state = State.IDLE
-            self.stop_robot()
-            return
+            # Si no hay más waypoints, verificar si también se alcanzó la orientación
+            if not self.rotating_to_final_orientation:
+                self.get_logger().info("No hay más waypoints - Verificando orientación final")
+                self.rotating_to_final_orientation = True
+            
+            # Calcular diferencia angular con la orientación objetivo
+            current_yaw = self.get_yaw_from_pose(estimated_pose)
+            goal_yaw = self.get_yaw_from_pose(self.goal_pose)
+            angular_error = self.angle_diff(goal_yaw, current_yaw)
+            
+            # Verificar si la orientación es correcta
+            if abs(angular_error) < self.angular_tolerance:
+                self.get_logger().info("¡Objetivo y orientación final alcanzados exitosamente!")
+                self.state = State.IDLE
+                self.rotating_to_final_orientation = False
+                self.stop_robot()
+                return
+            else:
+                # Rotar hacia la orientación objetivo
+                rotation_command = Twist()
+                rotation_command.linear.x = 0.0
+                rotation_command.angular.z = (self.final_rotation_speed if angular_error > 0 
+                                            else -self.final_rotation_speed)
+                self.cmd_vel_pub.publish(rotation_command)
+                return
 
         # === Cálculo de comandos de velocidad con Pure Pursuit ===
         velocity_command = self.follow_path(robot_x, robot_y, estimated_pose, target_point)

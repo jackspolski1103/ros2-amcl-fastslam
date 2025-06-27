@@ -1,0 +1,13 @@
+# Ignorar todo
+*
+
+# Pero permitir directorios necesarios para llegar al archivo
+!src/
+!src/my_py_amcl/
+!src/my_py_amcl/my_py_amcl/
+
+# Permitir específicamente el archivo amcl_node.py
+!src/my_py_amcl/my_py_amcl/amcl_node.py
+
+# Permitir este .gitignore
+!.gitignore

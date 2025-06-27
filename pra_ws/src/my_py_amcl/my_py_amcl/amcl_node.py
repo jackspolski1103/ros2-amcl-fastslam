@@ -341,8 +341,17 @@ class AmclNode(Node):
         Función principal del ciclo de control que se ejecuta a 10 Hz.
         Maneja la localización, navegación y máquina de estados del robot.
         """
-        # === Verificar precondiciones del sistema ===
-        if not self.map_received or self.latest_scan is None or not self.initial_pose_received:
+        # === Verificar precondiciones básicas del sistema ===
+        if not self.map_received or self.latest_scan is None:
+            return
+        
+        # === Inicialización automática de partículas para localización global ===
+        if not self.initial_pose_received:
+            # Si no se ha recibido pose inicial, inicializar partículas aleatoriamente
+            # para hacer localización global (Global Localization)
+            self.initialize_particles_randomly()
+            self.initial_pose_received = True  # Marcar como inicializado
+            self.get_logger().info("Iniciando localización global - partículas distribuidas aleatoriamente")
             return
 
         # === Obtener transformación actual de odometría ===

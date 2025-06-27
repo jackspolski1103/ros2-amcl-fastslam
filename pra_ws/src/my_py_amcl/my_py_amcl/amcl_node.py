@@ -191,7 +191,7 @@ class AmclNode(Node):
         yaw = R.from_quat([q.x, q.y, q.z, q.w]).as_euler('zyx')[0]
 
         # Parámetros de ruido: desviaciones estándar
-        std = [0.2, 0.2, 0.1]  # 20 cm de posición, 0.1 rad de orientación
+        std = [0.5, 0.5, 0.3]  # 20 cm de posición, 0.1 rad de orientación
 
         # Generar partículas alrededor de la pose inicial
         self.particles[:, 0] = np.random.normal(mean_x, std[0], self.num_particles)  # x
@@ -422,6 +422,16 @@ class AmclNode(Node):
         self.get_logger().info("Resampleo de partículas.")
         indices = np.random.choice(self.num_particles, size=self.num_particles, p=self.weights)
         self.particles = self.particles[indices]
+        
+        # Añadir ruido pequeño para evitar agrupaciones muy densas
+        noise_std = [0.05, 0.05, 0.02]  # 5 cm de posición, ~1° de orientación
+        self.particles[:, 0] += np.random.normal(0, noise_std[0], self.num_particles)  # x
+        self.particles[:, 1] += np.random.normal(0, noise_std[1], self.num_particles)  # y
+        self.particles[:, 2] += np.random.normal(0, noise_std[2], self.num_particles)  # yaw
+        
+        # Normalizar ángulos para mantenerlos en [-π, π]
+        self.particles[:, 2] = (self.particles[:, 2] + np.pi) % (2 * np.pi) - np.pi
+        
         self.weights = np.ones(self.num_particles) / self.num_particles
 
 

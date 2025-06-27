@@ -39,7 +39,7 @@ class AmclNode(Node):
         self.declare_parameter('laser_max_range', 3.5)
         self.declare_parameter('goal_topic', '/goal_pose')
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
-        self.declare_parameter('obstacle_detection_distance', 0.6)
+        self.declare_parameter('obstacle_detection_distance', 0.3)
         self.declare_parameter('obstacle_avoidance_turn_speed', 0.5)
         self.declare_parameter('angular_gain', 1.5)  # Ganancia P para el ángulo
         self.declare_parameter('max_curvature', 3.0) 
@@ -55,8 +55,8 @@ class AmclNode(Node):
         self.declare_parameter('z_hit', 0.9)                        # Peso de coincidencia entre LIDAR y mapa
         self.declare_parameter('z_rand', 0.1)                       # Peso de lecturas aleatorias (ruido del LIDAR)
         self.declare_parameter('lookahead_distance', 0.4)           # Para el seguimiento del camino (distancia de anticipación)
-        self.declare_parameter('linear_velocity', 0.2)              # Velocidad base de navegación (m/s)
-        self.declare_parameter('goal_tolerance', 0.15)              # Tolerancia para considerar que llegó al objetivo (m)
+        self.declare_parameter('linear_velocity', 0.1)              # Velocidad base de navegación (m/s)
+        self.declare_parameter('goal_tolerance', 0.10)              # Tolerancia para considerar que llegó al objetivo (m)
         self.declare_parameter('path_pruning_distance', 0.3)        # Distancia para podar puntos viejos del camino (m)
         self.declare_parameter('safety_margin_cells', 4)            # Celdas a expandir alrededor de obstáculos para seguridad
 
@@ -554,9 +554,29 @@ class AmclNode(Node):
         if self.latest_scan is None:
             return False
 
-        for r in self.latest_scan.ranges:
+        # Definir el rango angular frontal (en radianes)
+        front_angle_range = math.pi / 6  # ±30 grados (π/6 radianes)
+        
+        # Calcular los índices de los rayos frontales
+        num_rays = len(self.latest_scan.ranges)
+        angle_min = self.latest_scan.angle_min
+        angle_max = self.latest_scan.angle_max
+        angle_increment = self.latest_scan.angle_increment
+        
+        # Encontrar el índice central (ángulo ≈ 0)
+        center_index = int(-angle_min / angle_increment)
+        
+        # Calcular los índices del rango frontal
+        front_range_indices = int(front_angle_range / angle_increment)
+        start_index = max(0, center_index - front_range_indices)
+        end_index = min(num_rays, center_index + front_range_indices)
+        
+        # Solo revisar los rayos frontales
+        for i in range(start_index, end_index):
+            r = self.latest_scan.ranges[i]
             if not np.isnan(r) and r < self.obstacle_detection_distance:
                 return True
+        
         return False
     
     def astar(self, start, goal):
@@ -740,7 +760,17 @@ class AmclNode(Node):
             self.stop_robot()
             return
 
-        # 3) Poda de waypoints ya recorridos (path_pruning_distance)
+        # 3) AQUÍ AGREGAR: Detección de obstáculos
+        if self.is_obstacle_detected():
+            self.get_logger().info("Obstáculo detectado. State -> AVOIDING_OBSTACLE")
+            self.state = State.AVOIDING_OBSTACLE
+            # Inicializar variables para la evasión
+            self.obstacle_avoidance_start_yaw = self.get_yaw_from_pose(estimated_pose)
+            self.obstacle_avoidance_last_yaw = self.obstacle_avoidance_start_yaw
+            self.obstacle_avoidance_cumulative_angle = 0.0
+            return
+
+        # 4) Poda de waypoints ya recorridos (path_pruning_distance)
         self.current_path.poses = [
             p for p in self.current_path.poses
             if np.hypot(
@@ -749,7 +779,7 @@ class AmclNode(Node):
             ) > self.path_pruning_distance
         ]
 
-        # 4) Búsqueda del punto look-ahead
+        # 5) Búsqueda del punto look-ahead
         target = self.find_lookahead_point(self.current_path, robot_x, robot_y)
         if target is None:
             self.get_logger().info("Objetivo alcanzado o sin más waypoints. State -> IDLE")
@@ -757,7 +787,7 @@ class AmclNode(Node):
             self.stop_robot()
             return
 
-        # 5) Cálculo del Twist base con Pure Pursuit
+        # 6) Cálculo del Twist base con Pure Pursuit
         cmd = self.follow_path(robot_x, robot_y, estimated_pose, target)
 
         curvature = cmd.angular.z / max(1e-3, cmd.linear.x)
@@ -765,7 +795,7 @@ class AmclNode(Node):
         cmd.linear.x *= v_scale
         cmd.linear.x = max(cmd.linear.x, 0.05)  # al menos 5 cm/s
 
-        # 6) Publicar comando
+        # 7) Publicar comando
         self.cmd_vel_pub.publish(cmd)
 
 

@@ -9,5 +9,12 @@
 # Permitir específicamente el archivo amcl_node.py
 !src/my_py_amcl/my_py_amcl/amcl_node.py
 
+# Permitir directorios necesarios para turtlebot3_slam_mapper
+!src/turtlebot3_slam_mapper/
+!src/turtlebot3_slam_mapper/turtlebot3_slam_mapper/
+
+# Permitir específicamente el archivo python_slam_node.py
+!src/turtlebot3_slam_mapper/turtlebot3_slam_mapper/python_slam_node.py
+
 # Permitir este .gitignore
 !.gitignore

@@ -35,12 +35,12 @@ El algoritmo SLAM fue capaz de construir mapas precisos del entorno:
 #### Demostración de SLAM en Acción
 ![FastSLAM Demo](fastSlam.gif)
 
-#### Mapas Generados
+#### Mapas 
 **Mapa Original:**
 
 <img src="map.png" alt="Mapa Original" width="400">
 
-**Mapa Actualizado:**
+**Mapa Generado:**
 
 <img src="new_map.png" alt="Nuevo Mapa" width="400">
 

@@ -32,21 +32,23 @@ Este proyecto implementa dos algoritmos fundamentales de robótica móvil: **SLA
 ### SLAM - Construcción de Mapas
 El algoritmo SLAM fue capaz de construir mapas precisos del entorno:
 
-#### Video de SLAM en Acción
-![FastSLAM Demo](fastSlam.mp4)
+#### Demostración de SLAM en Acción
+![FastSLAM Demo](fastSlam.gif)
 
 #### Mapas Generados
 **Mapa Original:**
-![Mapa Original](map.png)
+
+<img src="map.png" alt="Mapa Original" width="400">
 
 **Mapa Actualizado:**
-![Nuevo Mapa](new_map.png)
+
+<img src="new_map.png" alt="Nuevo Mapa" width="400">
 
 ### AMCL - Localización y Navegación
 El algoritmo AMCL demostró capacidad de localización precisa y navegación autónoma:
 
-#### Video de AMCL en Acción
-![AMCL Demo](amcl.mp4)
+#### Demostración de AMCL en Acción
+![AMCL Demo](amcl.gif)
 
 ## 🚀 Funcionamiento
 

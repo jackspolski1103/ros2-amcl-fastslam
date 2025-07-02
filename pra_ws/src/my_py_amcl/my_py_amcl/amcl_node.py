@@ -44,19 +44,20 @@ class AmclNode(Node):
         self.declare_parameter('laser_max_range', 3.5)  # Alcance máximo efectivo del sensor láser en metros
         
         # Parámetros de navegación y evasión de obstáculos
-        self.declare_parameter('obstacle_detection_distance', 0.3)  # Distancia mínima para considerar un obstáculo (metros)
+        self.declare_parameter('obstacle_detection_distance', 0.25)  # Distancia mínima para considerar un obstáculo (metros)
         self.declare_parameter('obstacle_avoidance_turn_speed', 0.5)  # Velocidad angular durante maniobras de evasión (rad/s)
-        self.declare_parameter('angular_gain', 1.5)  # Ganancia proporcional para el control angular en navegación
+        self.declare_parameter('obstacle_avoidance_rotation_angle', 1.57/1.5) # Ángulo de rotación para evasión (radianes, 90 grados por defecto)
+        self.declare_parameter('obstacle_avoidance_reverse_duration', 1) # Duración del retroceso en evasión (segundos)
         self.declare_parameter('max_curvature', 3.0)  # Curvatura máxima permitida para limitar giros bruscos (rad/m)
 
         # === Parámetros del filtro de partículas AMCL ===
-        self.declare_parameter('num_particles', 100)  # Número total de partículas para representar la distribución de pose
+        self.declare_parameter('num_particles', 20)  # Número total de partículas para representar la distribución de pose
         
         # Parámetros de ruido del modelo de movimiento (motion model noise parameters)
         self.declare_parameter('alpha1', 0.005)  # Ruido rotacional proporcional a la rotación (rad²/rad²)
         self.declare_parameter('alpha2', 0.005)  # Ruido rotacional proporcional a la traslación (rad²/m²)
-        self.declare_parameter('alpha3', 0.01)   # Ruido traslacional proporcional a la traslación (m²/m²)
-        self.declare_parameter('alpha4', 0.01)   # Ruido traslacional proporcional a la rotación (m²/rad²)
+        self.declare_parameter('alpha3', 0.005)   # Ruido traslacional proporcional a la traslación (m²/m²)
+        self.declare_parameter('alpha4', 0.005)   # Ruido traslacional proporcional a la rotación (m²/rad²)
         
         # Parámetros del modelo de observación del sensor láser
         self.declare_parameter('z_hit', 0.9)   # Probabilidad de que una lectura del láser coincida con el mapa
@@ -64,7 +65,7 @@ class AmclNode(Node):
         
         # Parámetros de navegación autónoma con Pure Pursuit
         self.declare_parameter('lookahead_distance', 0.4)     # Distancia de anticipación para el algoritmo Pure Pursuit (metros)
-        self.declare_parameter('linear_velocity', 0.1)        # Velocidad lineal base para navegación autónoma (m/s)
+        self.declare_parameter('linear_velocity', 0.25)        # Velocidad lineal base para navegación autónoma (m/s)
         self.declare_parameter('goal_tolerance', 0.10)        # Radio de tolerancia para considerar alcanzado el objetivo (metros)
         self.declare_parameter('angular_tolerance', 0.1)      # Tolerancia angular para considerar alcanzada la orientación objetivo (radianes)
         self.declare_parameter('final_rotation_speed', 0.3)   # Velocidad angular para rotación final hacia orientación objetivo (rad/s)
@@ -106,8 +107,9 @@ class AmclNode(Node):
         self.safety_margin_cells = self.get_parameter('safety_margin_cells').value
         self.obstacle_detection_distance = self.get_parameter('obstacle_detection_distance').value
         self.obstacle_avoidance_turn_speed = self.get_parameter('obstacle_avoidance_turn_speed').value
+        self.obstacle_avoidance_rotation_angle = self.get_parameter('obstacle_avoidance_rotation_angle').value
+        self.obstacle_avoidance_reverse_duration = self.get_parameter('obstacle_avoidance_reverse_duration').value
         self.max_curvature = self.get_parameter('max_curvature').value
-        self.angular_gain = self.get_parameter('angular_gain').value
         
         # Parámetros de ruido para diversificar partículas durante remuestreo
         self.resample_noise = [
@@ -767,6 +769,7 @@ class AmclNode(Node):
         difference = angle_a - angle_b
         return (difference + np.pi) % (2 * np.pi) - np.pi
 
+
     def is_obstacle_detected(self):
         """
         Detecta si hay obstáculos en el sector frontal del robot.
@@ -781,7 +784,7 @@ class AmclNode(Node):
             return False
 
         # === Configurar sector de detección frontal ===
-        front_sector_angle = math.pi / 6  # ±30 grados desde el frente del robot
+        front_sector_angle = math.pi / 4  # ±30 grados desde el frente del robot
         
         # === Calcular índices de rayos en el sector frontal ===
         num_rays = len(self.latest_scan.ranges)
@@ -805,6 +808,63 @@ class AmclNode(Node):
         
         return False
     
+    def choose_turn_direction(self):
+        """
+        Analiza el espacio libre a izquierda y derecha para decidir la mejor dirección de giro.
+
+        Calcula la distancia promedio en los conos de visión lateral y elige
+        la dirección con mayor espacio libre para la evasión.
+
+        Returns:
+            str: 'left' o 'right', indicando la dirección de giro recomendada.
+        """
+        if self.latest_scan is None:
+            self.get_logger().warn("No hay datos de láser para elegir dirección de giro, eligiendo al azar.")
+            return 'left' if np.random.rand() > 0.5 else 'right'
+
+        ranges = np.array(self.latest_scan.ranges)
+        angle_min = self.latest_scan.angle_min
+        angle_increment = self.latest_scan.angle_increment
+        num_rays = len(ranges)
+
+        # Definir sectores angulares para izquierda y derecha
+        # Izquierda: 30 a 90 grados (pi/6 a pi/2)
+        # Derecha: -90 a -30 grados (-pi/2 a -pi/6)
+        
+        left_start_angle = math.pi / 6
+        left_end_angle = math.pi / 2
+        right_start_angle = -math.pi / 2
+        right_end_angle = -math.pi / 6
+
+        # Convertir ángulos a índices del array de rangos
+        left_start_idx = max(0, int((left_start_angle - angle_min) / angle_increment))
+        left_end_idx = min(num_rays, int((left_end_angle - angle_min) / angle_increment))
+        
+        right_start_idx = max(0, int((right_start_angle - angle_min) / angle_increment))
+        right_end_idx = min(num_rays, int((right_end_angle - angle_min) / angle_increment))
+
+        # Extraer rangos y reemplazar NaNs/Infs con un valor alto (max_range)
+        max_range = self.laser_max_range
+        left_ranges = ranges[left_start_idx:left_end_idx]
+        right_ranges = ranges[right_start_idx:right_end_idx]
+        
+        left_ranges[np.isnan(left_ranges)] = max_range
+        left_ranges[np.isinf(left_ranges)] = max_range
+        right_ranges[np.isnan(right_ranges)] = max_range
+        right_ranges[np.isinf(right_ranges)] = max_range
+
+        # Calcular distancia promedio en cada sector
+        avg_left_dist = np.mean(left_ranges)
+        avg_right_dist = np.mean(right_ranges)
+
+        self.get_logger().info(f"Espacio libre detectado - Izquierda: {avg_left_dist:.2f}m, Derecha: {avg_right_dist:.2f}m")
+
+        # Devolver la dirección con más espacio
+        if avg_left_dist > avg_right_dist:
+            return 'left'
+        else:
+            return 'right'
+
     def astar(self, start, goal):
         """
         Implementa el algoritmo A* para planificación de rutas en grilla.
@@ -1189,63 +1249,95 @@ class AmclNode(Node):
             estimated_pose: Pose actual estimada del robot
         """
         
-        # === Determinar dirección de giro en la primera ejecución ===
-        if not hasattr(self, 'turn_direction'):
-            robot_x = estimated_pose.position.x
-            robot_y = estimated_pose.position.y
-            robot_yaw = self.get_yaw_from_pose(estimated_pose)
-            
-            # Buscar próximo waypoint como referencia para dirección de giro
-            target_point = self.find_lookahead_point(self.current_path, robot_x, robot_y)
-            
-            if target_point is None:
-                # Si no hay waypoints, usar objetivo final como referencia
-                if self.goal_pose is not None:
-                    target_x = self.goal_pose.position.x
-                    target_y = self.goal_pose.position.y
-                else:
-                    # Estrategia de respaldo: giro hacia la izquierda
-                    self.turn_direction = 1
-                    return
+        # === Inicializar estado de evasión en la primera ejecución ===
+        if not hasattr(self, 'avoidance_sub_state'):
+            self.get_logger().info("Iniciando maniobra de evasión: Fase 1 - Retroceso")
+            self.avoidance_sub_state = 'reversing'
+            self.obstacle_avoidance_phase = 1
+            self.obstacle_avoidance_start_time = None
+
+        # Fase 1: Retroceder en línea recta durante un tiempo configurable
+        if self.obstacle_avoidance_phase == 1:
+            # Si es la primera vez en esta fase, registrar el tiempo de inicio
+            if self.obstacle_avoidance_start_time is None:
+                self.obstacle_avoidance_start_time = self.get_clock().now()
+                self.get_logger().info(f"Evasión Fase 1: Retrocediendo por {self.obstacle_avoidance_reverse_duration} segundos.")
+
+            # Calcular tiempo transcurrido
+            elapsed_time = (self.get_clock().now() - self.obstacle_avoidance_start_time).nanoseconds / 1e9
+
+            # Si el tiempo de retroceso no ha terminado, seguir retrocediendo
+            if elapsed_time < self.obstacle_avoidance_reverse_duration:
+                twist = Twist()
+                twist.linear.x = -self.linear_velocity / 2  # Retroceder a la mitad de la velocidad
+                twist.angular.z = 0.0
+                self.cmd_vel_pub.publish(twist)
+                return
             else:
-                target_x = target_point.position.x
-                target_y = target_point.position.y
+                # Terminar Fase 1 y pasar a Fase 2 (giro)
+                self.get_logger().info("Evasión Fase 1 completada. Pasando a Fase 2: Giro.")
+                self.obstacle_avoidance_phase = 2
+                self.obstacle_avoidance_start_time = None  # Reiniciar para la próxima vez
+                # Determinar la dirección del giro basado en el espacio libre
+                self.obstacle_avoidance_turn_direction = self.choose_turn_direction()
+                self.get_logger().info(f"Dirección de giro elegida: {self.obstacle_avoidance_turn_direction}")
+                self.obstacle_avoidance_start_yaw = self.get_yaw_from_pose(estimated_pose)
+                self.obstacle_avoidance_cumulative_angle = 0.0
+                self.stop_robot() # Detenerse brevemente antes de girar
+                return
+
+        # Fase 2: Girar en el lugar un ángulo configurable
+        elif self.obstacle_avoidance_phase == 2:
+            # Calcular el ángulo girado desde que comenzó la Fase 2
+            current_yaw = self.get_yaw_from_pose(estimated_pose)
             
-            # === Calcular dirección óptima de giro ===
-            # Vector hacia el objetivo
-            delta_x = target_x - robot_x
-            delta_y = target_y - robot_y
-            target_bearing = math.atan2(delta_y, delta_x)
-            
-            # Diferencia angular más corta hacia el objetivo
-            angular_error = self.angle_diff(target_bearing, robot_yaw)
-            
-            # Seleccionar dirección de giro según ubicación del objetivo
-            if angular_error > 0:
-                self.turn_direction = 1  # Giro antihorario (izquierda)
+            # Inicializar el yaw de referencia si es la primera vez
+            if self.obstacle_avoidance_start_yaw is None:
+                self.obstacle_avoidance_start_yaw = current_yaw
+                self.obstacle_avoidance_last_yaw = current_yaw
+                return
+
+            # Calcular el cambio de ángulo desde el último ciclo
+            delta_angle = self.angle_diff(current_yaw, self.obstacle_avoidance_last_yaw)
+            self.obstacle_avoidance_cumulative_angle += abs(delta_angle)
+            self.obstacle_avoidance_last_yaw = current_yaw
+
+            # Si el ángulo acumulado es menor que el objetivo, seguir girando
+            if self.obstacle_avoidance_cumulative_angle < self.obstacle_avoidance_rotation_angle:
+                twist = Twist()
+                twist.linear.x = 0.0
+                # Girar en la dirección elegida
+                turn_speed = self.obstacle_avoidance_turn_speed
+                twist.angular.z = turn_speed if self.obstacle_avoidance_turn_direction == 'left' else -turn_speed
+                self.cmd_vel_pub.publish(twist)
+                return
             else:
-                self.turn_direction = -1  # Giro horario (derecha)
+                # Terminar la maniobra de evasión
+                self.get_logger().info("Evasión Fase 2 completada. Reanudando navegación.")
+                self.stop_robot()
+                self.state = State.NAVIGATING
+                # Reiniciar todas las variables de estado de evasión
+                self.obstacle_avoidance_active = False
+                self.obstacle_avoidance_phase = 1
+                self.obstacle_avoidance_start_time = None
+                self.obstacle_avoidance_start_yaw = None
+                self.obstacle_avoidance_last_yaw = None
+                self.obstacle_avoidance_cumulative_angle = 0.0
+                self.obstacle_avoidance_turn_direction = None
+                # Forzar una nueva planificación para encontrar una ruta alternativa
+                self.state = State.PLANNING
+                return
 
-        # === Ejecutar maniobra de giro ===
-        evasion_command = Twist()
-        evasion_command.linear.x = 0.0  # Detener movimiento hacia adelante
-        evasion_command.angular.z = self.turn_direction * self.obstacle_avoidance_turn_speed
-        self.cmd_vel_pub.publish(evasion_command)
-
-        # === Verificar condición de salida ===
-        if not self.is_obstacle_detected():
-            self.get_logger().info("Obstáculo evadido - Retomando navegación")
-            
-            # Limpiar variables de estado de evasión
-            if hasattr(self, 'turn_direction'):
-                delattr(self, 'turn_direction')
-            self.obstacle_avoidance_cumulative_angle = 0.0
-            
-            # Retornar a navegación normal
-            self.state = State.NAVIGATING
-
-    # --------------------------------------------
-
+    def run_localization_cycle(self, current_odom_tf):
+        # 1. Prediction (Motion Model)
+        self.motion_model(current_odom_tf)
+        # 2. Update (Measurement Model)
+        self.measurement_model()
+        # 3. Resample
+        self.resample()
+        # 4. Estimation
+        return self.estimate_pose()
+    
 
 def main(args=None):
     rclpy.init(args=args)
@@ -1255,4 +1347,4 @@ def main(args=None):
     rclpy.shutdown()
 
 if __name__ == '__main__':
-    main() 
+    main()

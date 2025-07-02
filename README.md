@@ -50,6 +50,13 @@ El algoritmo AMCL demostró capacidad de localización precisa y navegación aut
 #### Demostración de AMCL en Acción
 ![AMCL Demo](amcl.gif)
 
+
+### Detección y Evasión de Obstáculos
+
+![obstacle avoidance](obstacle_avoidance.gif)
+
+
+
 ## 🚀 Funcionamiento
 
 ### SLAM
